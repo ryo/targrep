@@ -1,0 +1,73 @@
+#!/usr/local/bin/perl
+#
+# $Id: targrep,v 1.2 2011/01/25 07:14:05 ryo Exp $
+#
+
+use strict;
+use warnings;
+use Getopt::Std;
+use Data::Dumper;
+
+sub usage {
+	die <<USAGE;
+usage: targrep [options] pattern
+	-n	dry-run
+	-v	invert match
+USAGE
+}
+
+my $BLOCKSIZE = 512;
+my $HEADER_ZERO = "\0" x $BLOCKSIZE;
+my $HEADER_OLD_TAR = "a100{name} a8{mode} a8{uid} a8{gid} a12{size} a12{mtime} a8{checksum} a1{linkflag} a100{linkname} a255{pad} ";
+
+my %opts;
+getopts('nv', \%opts) or die "usage: targrep [-v] regexp-pattern\n";
+
+my $pattern = shift;
+
+my $zerocnt;
+while ((my $len = sysread(STDIN, my $header, $BLOCKSIZE)) == $BLOCKSIZE) {
+	if ($header eq $HEADER_ZERO) {
+		last if (++$zerocnt >= 2);
+		next;
+	}
+	$zerocnt = 0;
+
+	my %headers = unpack_hash($HEADER_OLD_TAR, $header);
+	my $size = align(oct $headers{size}, 512);
+
+	my $data;
+	if (sysread(STDIN, $data, $size) != $size) {
+		die "unexpected eof\n";
+	}
+
+	if (($headers{name} =~ m/$pattern/) ^ !!$opts{v}) {
+		print STDERR "MATCH: ", $headers{name}, "\n";
+
+		unless ($opts{n}) {
+			print $header;
+			print $data;
+		}
+	} else {
+		print STDERR "SKIP!: ", $headers{name}, "\n";
+	}
+}
+print $HEADER_ZERO;
+
+
+sub unpack_hash {
+	my ($template, $data) = @_;
+
+	my @keys;
+	$template =~ s/\{(\w+)\}/push(@keys, $1); ""/seg;
+
+	my %result;
+	@result{@keys} = map { s/\0[\0 ]*$//s; $_ } unpack($template, $data);
+
+	%result;
+}
+
+sub align {
+	my ($size, $align) = @_;
+	int(($size + $align - 1) / $align) * $align;
+}
